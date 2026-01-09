@@ -1,121 +1,226 @@
+## 1. Overview
 
+This project implements a **custom network proxy server** in C++ that supports HTTP request forwarding, HTTPS tunneling via the CONNECT method, domain-based access control, concurrent client handling, and structured request logging.
 
-## 1 Overview
+The proxy acts as an intermediary between clients (web browsers or command-line tools such as `curl`) and destination web servers. Incoming client requests are inspected, validated against administrative policies, and either forwarded transparently or blocked based on configured rules.
 
-This project implements a **custom network proxy server** in C++ that supports HTTP request forwarding, HTTPS tunneling using the CONNECT method, domain-based access control, concurrent client handling, and request logging. The proxy acts as an intermediary between clients (web browsers or command-line tools) and destination web servers, enforcing administrative rules while transparently forwarding allowed traffic.
-
-The design prioritizes **correctness, stability, and simplicity**, making it suitable for academic use and moderate workloads.
-
----
-
-## 2 High-Level Architecture
-
-### Architecture Description
-
-The system follows a **client–proxy–server** architecture. Clients are configured to route their network traffic through the proxy server. The proxy inspects incoming requests, applies filtering policies, and forwards valid requests to the target servers. Responses are then relayed back to the clients.
-
-### Architecture Diagram 
-
-The overall architecture of the proxy server is illustrated in **diagram.png**. The diagram shows the interaction between the client, the proxy server’s internal modules, and the destination servers.
-
-### Internal Components
-
-* **Main Server Module (main.cpp)**
-  Initializes the listening socket, accepts incoming client connections, and spawns a new thread for each connection.
-
-* **Proxy Handler (proxy.cpp)**
-  Implements core proxy functionality including request parsing, domain filtering, HTTP forwarding, HTTPS tunneling, socket timeouts, and graceful connection termination.
-
-* **HTTP Parser (http_parser.cpp)**
-  Parses incoming HTTP requests to extract method, destination host, port number, and raw request data.
-
-* **Domain Filter (filter.cpp)**
-  Loads blocked domains from a configuration file and applies subdomain-aware matching to determine whether a request should be blocked.
-
-* **Logger (logger.cpp)**
-  Records proxy activity such as allowed requests, blocked requests, and HTTPS tunnel creation for auditing and debugging.
+The design prioritizes **correctness, robustness, modularity, and simplicity**, making the implementation suitable for academic evaluation and moderate real-world workloads while remaining extensible for future enhancements.
 
 ---
 
-## 3 Concurrency Model and Rationale
+## 2. High-Level Architecture
 
-### Concurrency Model Used
+### 2.1 Architecture Description
+
+The system follows a classic **client–proxy–server** architecture:
+
+1. Clients are explicitly configured to use the proxy server.
+2. All HTTP/HTTPS traffic flows through the proxy.
+3. The proxy inspects request metadata (method, host, port).
+4. Administrative policies (domain filtering) are applied.
+5. Allowed traffic is forwarded to destination servers.
+6. Responses are relayed back to clients.
+
+The proxy does **not modify application payloads** and does **not decrypt HTTPS traffic**, preserving end-to-end security.
+
+---
+
+### 2.2 Architecture Diagram
+
+The overall architecture is illustrated in **`diagram.png`**, showing:
+
+* Clients (browser / curl)
+* Proxy server and its internal modules
+* Destination web servers
+* Bidirectional data flow for HTTP and HTTPS
+
+---
+
+### 2.3 Internal Components
+
+#### **Main Server Module (`main.cpp`)**
+
+* Initializes the listening socket
+* Binds to the configured port
+* Accepts incoming client connections
+* Spawns a new thread for each connection
+* Acts as the lifecycle controller for the proxy
+
+---
+
+#### **Proxy Handler (`proxy.cpp`)**
+
+Implements the core proxy logic:
+
+* Reads client requests
+* Delegates parsing to the HTTP parser
+* Applies domain filtering rules
+* Handles HTTP forwarding
+* Implements HTTPS tunneling via CONNECT
+* Enforces socket timeouts
+* Ensures graceful shutdown of connections
+
+---
+
+#### **HTTP Parser (`http_parser.cpp`)**
+
+* Parses raw HTTP request data
+* Extracts:
+
+  * HTTP method
+  * Target host
+  * Target port
+  * Raw request payload
+* Supports both absolute-form requests and CONNECT requests
+
+---
+
+#### **Domain Filter (`filter.cpp`)**
+
+* Loads blocked domains from `config/blocked_domains.txt`
+* Performs **subdomain-aware matching**
+
+  * Blocking `example.com` automatically blocks `sub.example.com`
+* Ensures policy enforcement before outbound connections are made
+
+---
+
+#### **Logger (`logger.cpp`)**
+
+* Records proxy activity to `logs/proxy.log`
+* Logs:
+
+  * Allowed requests
+  * Blocked requests
+  * HTTPS tunnel establishment
+* Provides traceability for debugging and testing
+
+---
+
+## 3. Concurrency Model and Rationale
+
+### 3.1 Concurrency Model Used
 
 The proxy server uses a **thread-per-connection** concurrency model.
 
-Each incoming client connection is handled by a separate thread created at the time of connection acceptance.
-
-### Rationale
-
-* Simplifies design and implementation
-* Each client request is isolated, preventing blocking across clients
-* Suitable for moderate numbers of concurrent clients
-* Aligns well with the educational objectives of the project
-
-Alternative models such as event-driven I/O or thread pools were considered but not implemented due to increased complexity and reduced clarity for this project’s scope.
+Each client connection is handled by a dedicated thread created immediately after connection acceptance.
 
 ---
 
-## 4 Data Flow Description
+### 3.2 Rationale
 
-### HTTP Request Handling Flow
+This model was selected because:
+
+* It provides **strong isolation** between clients
+* Blocking I/O in one connection does not affect others
+* Implementation is straightforward and easy to reason about
+* Debugging and correctness verification are simpler
+* Suitable for moderate concurrency levels expected in academic settings
+
+Alternative designs such as event-driven I/O or thread pools were considered but not implemented due to increased complexity and reduced transparency for this project’s scope.
+
+---
+
+## 4. Data Flow Description
+
+### 4.1 HTTP Request Handling Flow
 
 1. Client sends an HTTP request to the proxy.
-2. Proxy reads the request and parses HTTP headers.
-3. Domain filter checks whether the destination host is blocked.
-4. If blocked, the proxy returns an HTTP 403 Forbidden response.
-5. If allowed:
+2. Proxy reads the request from the client socket.
+3. HTTP parser extracts method, host, and port.
+4. Domain filter checks whether the host is blocked.
+5. If blocked:
 
-   * Proxy establishes a TCP connection to the destination server.
-   * The request is forwarded (using HTTP/1.0 semantics).
-   * The response is read with socket timeouts.
-   * The response is forwarded back to the client.
-6. Connections are closed gracefully after completion.
+   * Proxy returns `HTTP/1.1 403 Forbidden`
+   * Request is logged and connection closed
+6. If allowed:
 
-### HTTPS Request Handling Flow (CONNECT Method)
+   * Proxy resolves the destination hostname
+   * Establishes a TCP connection to the server
+   * Forwards the HTTP request using HTTP/1.0 semantics
+   * Reads the server response with timeouts
+   * Forwards the response to the client
+7. Both connections are closed gracefully
 
-1. Client sends a CONNECT request specifying target host and port.
-2. Proxy validates the destination against domain filtering rules.
+---
+
+### 4.2 HTTPS Request Handling Flow (CONNECT Method)
+
+1. Client sends a CONNECT request specifying host and port.
+2. Proxy parses the request and applies domain filtering.
 3. Proxy establishes a TCP connection to the destination server.
-4. Proxy responds with `200 Connection Established`.
+4. Proxy responds with:
+
+   ```
+   HTTP/1.1 200 Connection Established
+   ```
 5. A bidirectional tunnel is created between client and server.
-6. Encrypted traffic is forwarded without inspection until connection termination.
+6. Encrypted data is forwarded transparently using `select()`.
+7. Tunnel closes on timeout, client disconnect, or server disconnect.
+
+The proxy does **not inspect or modify HTTPS payloads**.
 
 ---
 
-## 5 Error Handling
+## 5. Error Handling
 
-The proxy server includes multiple safeguards to ensure stability:
+The proxy includes multiple defensive mechanisms:
 
-* Socket receive timeouts prevent indefinite blocking
-* Half-close (`shutdown()`) semantics ensure proper connection termination
-* DNS resolution failures are handled gracefully
-* Malformed or unsupported requests are rejected safely
-* All sockets are properly closed to prevent resource leaks
+* Receive and send timeouts to prevent indefinite blocking
+* Graceful handling of DNS resolution failures
+* Safe rejection of malformed or unsupported requests
+* Proper socket shutdown and closure to prevent leaks
+* Timeout-based termination of inactive HTTPS tunnels
 
----
-
-## 6 Limitations
-
-* Full HTTP/1.1 features (persistent connections, chunked encoding) are not supported
-* HTTPS traffic is not decrypted or inspected
-* No authentication mechanism is implemented
-* No caching for HTTPS responses
-
-These limitations are acceptable given the scope and objectives of the project.
+These measures ensure stability even under malformed input or network failures.
 
 ---
 
-## 7 Security Considerations
+## 6. Configuration Design
 
-* HTTPS traffic remains end-to-end encrypted, preserving confidentiality
-* The proxy does not log request payloads or sensitive data
-* Domain filtering reduces access to restricted or unsafe domains
-* The server avoids indefinite blocking and denial-of-service risks via timeouts
+The proxy externalizes its behavior using configuration files located in the `config/` directory.
+
+* **`blocked_domains.txt`**
+
+  * Fully implemented
+  * Controls domain-based access restrictions
+  * Supports subdomain-aware blocking
+
+* **`proxy.conf` and `logging.conf`**
+
+  * Define extensible parameters such as ports, timeouts, and logging behavior
+  * Provide a foundation for future enhancements
+  * Not fully parsed in the current implementation, but documented for extensibility
+
+This design avoids recompilation for policy changes and improves maintainability.
 
 ---
 
-## 8 Summary
+## 7. Limitations
 
-The proxy server design achieves a balance between functionality, simplicity, and robustness. By combining modular architecture, concurrency support, and defensive networking practices, the system fulfills all project requirements while remaining extensible for future enhancements such as caching, authentication, or traffic analysis.
+* HTTP/1.1 persistent connections are not supported
+* Chunked transfer encoding is not handled
+* HTTPS traffic is not decrypted or cached
+* No user authentication or access control
+* No rate limiting or bandwidth shaping
+
+These limitations are acceptable given the project scope and learning objectives.
+
+---
+
+## 8. Security Considerations
+
+* HTTPS traffic remains end-to-end encrypted
+* The proxy does not log request bodies or credentials
+* Domain filtering reduces exposure to restricted domains
+* Socket timeouts reduce denial-of-service risks
+* No sensitive data is stored or processed by the proxy
+
+---
+
+## 9. Summary
+
+This proxy server demonstrates a complete, modular, and robust implementation of an HTTP/HTTPS forwarding proxy. Through clear architectural separation, explicit concurrency design, defensive networking practices, and configurable policy enforcement, the system fulfills all project requirements while remaining extensible for future work such as caching, authentication, or traffic analysis.
+
+---
 
