@@ -33,10 +33,16 @@ void handle_client(int client_fd) {
     std::string request(buffer, n);
     HttpRequest req;
 
-    if (!parse_http_request(request, req)) {
-        close(client_fd);
-        return;
-    }
+   if (!parse_http_request(request, req)) {
+    std::string resp =
+        "HTTP/1.1 400 Bad Request\r\n"
+        "Content-Length: 0\r\n\r\n";
+
+    send(client_fd, resp.c_str(), resp.size(), 0);
+    log_event("MALFORMED REQUEST");
+    close(client_fd);
+    return;
+}
 
     if (filter.is_blocked(req.host)) {
         std::string resp =
