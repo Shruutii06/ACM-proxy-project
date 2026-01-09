@@ -58,6 +58,22 @@ proxy-project/
 * Configurable blocked domain list
 
 ---
+## Configuration
+
+The proxy uses external configuration files located in the `config/` directory.
+
+- `blocked_domains.txt`  
+  Contains domains that should be blocked. Subdomains are automatically blocked.
+
+- `proxy.conf`  
+  Defines core proxy parameters such as listening port and timeouts.
+
+- `logging.conf`  
+  Controls logging behavior and log file location.
+
+Only `blocked_domains.txt` is actively parsed by the current implementation; the remaining configuration files provide extensibility for future enhancements.
+
+--- 
 
 ## Build Instructions
 
