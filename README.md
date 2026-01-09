@@ -31,6 +31,8 @@ proxy-project/
 │   └── logger.h
 ├── config/
 │   └── blocked_domains.txt # List of blocked domains
+│   ├── proxy.conf
+│   └── logging.conf
 ├── logs/
 │   └── proxy.log           # Runtime logs
 ├── tests/
